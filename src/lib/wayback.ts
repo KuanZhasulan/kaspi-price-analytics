@@ -28,8 +28,20 @@ export async function getSnapshots(productUrl: string): Promise<Snapshot[]> {
     `&limit=60` +
     `&from=20190101`;
 
-  const response = await axios.get<string[][]>(cdxUrl, { timeout: 30_000 });
-  const rows = response.data;
+  // Retry up to 3 times — CDX API can be slow
+  let lastErr: unknown;
+  let response;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      response = await axios.get<string[][]>(cdxUrl, { timeout: 60_000 });
+      break;
+    } catch (e) {
+      lastErr = e;
+      if (attempt < 3) await new Promise((r) => setTimeout(r, 2000 * attempt));
+    }
+  }
+  if (!response) throw lastErr;
+  const rows = response!.data;
 
   if (!Array.isArray(rows) || rows.length <= 1) return [];
 

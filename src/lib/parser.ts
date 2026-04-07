@@ -3,6 +3,53 @@ import * as cheerio from 'cheerio';
 export interface ParsedData {
   price: number;
   shop?: string;
+  strategy: string;
+}
+
+/**
+ * Extract product name from a Kaspi page HTML.
+ * Tries JSON-LD, og:title, <title>, then <h1>.
+ */
+export function extractProductName(html: string): string | null {
+  // 1. JSON-LD name field
+  const jldRe = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = jldRe.exec(html)) !== null) {
+    try {
+      const data = JSON.parse(m[1]);
+      const name = findNameInJsonLd(data);
+      if (name) return name;
+    } catch {}
+  }
+
+  // 2. og:title
+  const ogMatch = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i);
+  if (ogMatch?.[1]) return clean(ogMatch[1]);
+
+  // 3. <title>
+  const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+  if (titleMatch?.[1]) return clean(titleMatch[1]);
+
+  // 4. first <h1>
+  const h1Match = html.match(/<h1[^>]*>([^<]+)<\/h1>/i);
+  if (h1Match?.[1]) return clean(h1Match[1]);
+
+  return null;
+}
+
+function findNameInJsonLd(obj: unknown): string | null {
+  if (!obj || typeof obj !== 'object') return null;
+  const o = obj as Record<string, unknown>;
+  if (typeof o.name === 'string' && o.name.length > 3) return o.name;
+  for (const val of Object.values(o)) {
+    const found = findNameInJsonLd(val);
+    if (found) return found;
+  }
+  return null;
+}
+
+function clean(s: string): string {
+  return s.replace(/\s+/g, ' ').replace(/ [-|–] [Kk]aspi.*$/i, '').trim();
 }
 
 /**
@@ -19,6 +66,10 @@ export function extractPriceData(html: string): ParsedData | null {
   );
 }
 
+export function extractProductNameFromHtml(html: string): string | null {
+  return extractProductName(html);
+}
+
 // ─── Strategy 1: JSON-LD structured data ────────────────────────────────────
 
 function fromJsonLd(html: string): ParsedData | null {
@@ -28,7 +79,7 @@ function fromJsonLd(html: string): ParsedData | null {
     try {
       const data = JSON.parse(m[1]);
       const result = searchJsonLdForOffers(data);
-      if (result) return result;
+      if (result) return { ...result, strategy: 'json-ld' };
     } catch {}
   }
   return null;
@@ -47,6 +98,7 @@ function searchJsonLdForOffers(obj: unknown): ParsedData | null {
         if (isValid(price)) {
           return {
             price,
+            strategy: 'json-ld',
             shop: typeof offer.seller === 'object' && offer.seller !== null
               ? String((offer.seller as Record<string, unknown>).name ?? '')
               : undefined,
@@ -74,7 +126,7 @@ function fromMetaTags(html: string): ParsedData | null {
 
   if (content) {
     const price = parseFloat(content.replace(/[^0-9.]/g, ''));
-    if (isValid(price)) return { price };
+    if (isValid(price)) return { price, strategy: 'meta' };
   }
   return null;
 }
@@ -100,7 +152,7 @@ function fromScriptPriceFields(html: string): ParsedData | null {
     }
 
     if (prices.length > 0) {
-      return { price: Math.min(...prices) };
+      return { price: Math.min(...prices), strategy: 'script-json' };
     }
   }
   return null;
@@ -135,14 +187,14 @@ function fromHtmlElements(html: string): ParsedData | null {
     const attr = el.attr('data-price');
     if (attr) {
       const p = parseFloat(attr.replace(/[^0-9.]/g, ''));
-      if (isValid(p)) return { price: p, shop: findShop($) };
+      if (isValid(p)) return { price: p, shop: findShop($), strategy: 'html-attr' };
     }
 
     // Fall back to text content
     const text = el.text().replace(/[^0-9]/g, '');
     if (text.length >= 4) {
       const p = parseInt(text, 10);
-      if (isValid(p)) return { price: p, shop: findShop($) };
+      if (isValid(p)) return { price: p, shop: findShop($), strategy: 'html-text' };
     }
   }
   return null;

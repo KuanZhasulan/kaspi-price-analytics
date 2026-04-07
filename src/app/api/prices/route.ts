@@ -1,7 +1,8 @@
 import { NextRequest } from 'next/server';
 import axios from 'axios';
 import { getSnapshots } from '@/lib/wayback';
-import { extractPriceData } from '@/lib/parser';
+import { extractPriceData, extractProductName } from '@/lib/parser';
+import { log } from '@/lib/log';
 
 export interface PricePoint {
   date: string;
@@ -50,7 +51,6 @@ function normalizeKaspiUrl(raw: string): string {
   }
 }
 
-/** Run tasks with bounded concurrency */
 async function mapConcurrent<T, R>(
   items: T[],
   concurrency: number,
@@ -92,22 +92,31 @@ export async function GET(req: NextRequest) {
       }
 
       const productUrl = normalizeKaspiUrl(raw);
+      const startMs = Date.now();
+      let productName: string | null = null;
+
+      log.header(`Kaspi Price Analytics — new request`);
+      log.info(`URL: ${productUrl}`);
 
       let snapshots;
       try {
         snapshots = await getSnapshots(productUrl);
       } catch (e) {
-        ctrl.enqueue(sse({ type: 'error', message: `Failed to query web archive: ${String(e)}` }));
+        const msg = `Failed to query web archive: ${String(e)}`;
+        log.info(`ERROR: ${msg}`);
+        ctrl.enqueue(sse({ type: 'error', message: msg }));
         ctrl.close();
         return;
       }
 
       if (snapshots.length === 0) {
+        log.info('No snapshots found in Wayback Machine.');
         ctrl.enqueue(sse({ type: 'done', points: [], total: 0, parsed: 0 }));
         ctrl.close();
         return;
       }
 
+      log.found(snapshots.length, productUrl);
       ctrl.enqueue(sse({ type: 'snapshots', total: snapshots.length }));
 
       let done = 0;
@@ -115,12 +124,29 @@ export async function GET(req: NextRequest) {
         snapshots,
         4,
         async (snap) => {
+          const date = snap.date.toISOString().split('T')[0];
           const html = await fetchHtml(snap.archivedUrl);
-          if (!html) return null;
+
+          if (!html) {
+            log.miss(date);
+            return null;
+          }
+
+          // Grab product name from the first successful HTML fetch
+          if (!productName) {
+            productName = extractProductName(html);
+          }
+
           const parsed = extractPriceData(html);
-          if (!parsed) return null;
+          if (!parsed) {
+            log.miss(date);
+            return null;
+          }
+
+          log.price(date, parsed.price, parsed.shop, parsed.strategy);
+
           return {
-            date: snap.date.toISOString().split('T')[0],
+            date,
             price: parsed.price,
             shop: parsed.shop || undefined,
             timestamp: snap.timestamp,
@@ -135,6 +161,8 @@ export async function GET(req: NextRequest) {
       const points = rawResults
         .filter((r): r is PricePoint => r !== null)
         .sort((a, b) => a.date.localeCompare(b.date));
+
+      log.summary(productName, points.length, snapshots.length, Date.now() - startMs);
 
       ctrl.enqueue(sse({ type: 'done', points, total: snapshots.length, parsed: points.length }));
       ctrl.close();
