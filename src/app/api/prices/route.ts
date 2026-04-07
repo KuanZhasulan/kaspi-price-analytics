@@ -1,43 +1,32 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import axios from 'axios';
 import { getSnapshots } from '@/lib/wayback';
 import { extractPriceData } from '@/lib/parser';
 
-/** Run tasks with max `concurrency` in flight at once */
-async function mapConcurrent<T, R>(
-  items: T[],
-  concurrency: number,
-  fn: (item: T) => Promise<R>
-): Promise<R[]> {
-  const results: R[] = new Array(items.length);
-  let idx = 0;
-  async function worker() {
-    while (idx < items.length) {
-      const i = idx++;
-      results[i] = await fn(items[i]);
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
-  return results;
-}
-
 export interface PricePoint {
-  date: string;       // YYYY-MM-DD
-  price: number;      // KZT
+  date: string;
+  price: number;
   shop?: string;
-  timestamp: string;  // Wayback timestamp (for dedup)
+  timestamp: string;
 }
 
-const FETCH_HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+export type SSEEvent =
+  | { type: 'snapshots'; total: number }
+  | { type: 'progress'; done: number; total: number }
+  | { type: 'done'; points: PricePoint[]; total: number; parsed: number }
+  | { type: 'error'; message: string };
+
+const HEADERS = {
+  'User-Agent':
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
   'Accept-Language': 'ru-RU,ru;q=0.9,kk;q=0.8,en;q=0.7',
 };
 
 async function fetchHtml(url: string): Promise<string | null> {
   try {
     const { data } = await axios.get<string>(url, {
-      headers: FETCH_HEADERS,
+      headers: HEADERS,
       timeout: 20_000,
       maxRedirects: 5,
       responseType: 'text',
@@ -51,7 +40,6 @@ async function fetchHtml(url: string): Promise<string | null> {
 function normalizeKaspiUrl(raw: string): string {
   try {
     const u = new URL(raw);
-    // Keep city param if present; strip other query params
     const city = u.searchParams.get('c');
     let out = `${u.origin}${u.pathname}`;
     if (!out.endsWith('/')) out += '/';
@@ -62,58 +50,102 @@ function normalizeKaspiUrl(raw: string): string {
   }
 }
 
+/** Run tasks with bounded concurrency */
+async function mapConcurrent<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<R>,
+  onDone?: (index: number, result: R) => void
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let idx = 0;
+  async function worker() {
+    while (idx < items.length) {
+      const i = idx++;
+      results[i] = await fn(items[i], i);
+      onDone?.(i, results[i]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+  return results;
+}
+
 export async function GET(req: NextRequest) {
   const raw = req.nextUrl.searchParams.get('url');
-  if (!raw) {
-    return NextResponse.json({ error: 'Missing url parameter' }, { status: 400 });
-  }
-  if (!raw.includes('kaspi.kz/shop/p/')) {
-    return NextResponse.json({ error: 'URL must be a kaspi.kz product link' }, { status: 400 });
-  }
 
-  const productUrl = normalizeKaspiUrl(raw);
-
-  let snapshots;
-  try {
-    snapshots = await getSnapshots(productUrl);
-  } catch (err) {
-    return NextResponse.json(
-      { error: 'Failed to query web archive', details: String(err) },
-      { status: 502 }
-    );
+  const enc = new TextEncoder();
+  function sse(event: SSEEvent): Uint8Array {
+    return enc.encode(`data: ${JSON.stringify(event)}\n\n`);
   }
 
-  if (snapshots.length === 0) {
-    return NextResponse.json({
-      points: [],
-      total: 0,
-      message: 'No archived snapshots found for this product URL.',
-    });
-  }
+  const stream = new ReadableStream({
+    async start(ctrl) {
+      if (!raw) {
+        ctrl.enqueue(sse({ type: 'error', message: 'Missing url parameter' }));
+        ctrl.close();
+        return;
+      }
+      if (!raw.includes('kaspi.kz/shop/p/')) {
+        ctrl.enqueue(sse({ type: 'error', message: 'URL must be a kaspi.kz product link' }));
+        ctrl.close();
+        return;
+      }
 
-  // Concurrency: 4 parallel Wayback fetches
-  const results = await mapConcurrent(snapshots, 4, async (snap): Promise<PricePoint | null> => {
-    const html = await fetchHtml(snap.archivedUrl);
-    if (!html) return null;
+      const productUrl = normalizeKaspiUrl(raw);
 
-    const parsed = extractPriceData(html);
-    if (!parsed) return null;
+      let snapshots;
+      try {
+        snapshots = await getSnapshots(productUrl);
+      } catch (e) {
+        ctrl.enqueue(sse({ type: 'error', message: `Failed to query web archive: ${String(e)}` }));
+        ctrl.close();
+        return;
+      }
 
-    return {
-      date: snap.date.toISOString().split('T')[0],
-      price: parsed.price,
-      shop: parsed.shop || undefined,
-      timestamp: snap.timestamp,
-    };
+      if (snapshots.length === 0) {
+        ctrl.enqueue(sse({ type: 'done', points: [], total: 0, parsed: 0 }));
+        ctrl.close();
+        return;
+      }
+
+      ctrl.enqueue(sse({ type: 'snapshots', total: snapshots.length }));
+
+      let done = 0;
+      const rawResults = await mapConcurrent(
+        snapshots,
+        4,
+        async (snap) => {
+          const html = await fetchHtml(snap.archivedUrl);
+          if (!html) return null;
+          const parsed = extractPriceData(html);
+          if (!parsed) return null;
+          return {
+            date: snap.date.toISOString().split('T')[0],
+            price: parsed.price,
+            shop: parsed.shop || undefined,
+            timestamp: snap.timestamp,
+          } as PricePoint;
+        },
+        () => {
+          done++;
+          ctrl.enqueue(sse({ type: 'progress', done, total: snapshots.length }));
+        }
+      );
+
+      const points = rawResults
+        .filter((r): r is PricePoint => r !== null)
+        .sort((a, b) => a.date.localeCompare(b.date));
+
+      ctrl.enqueue(sse({ type: 'done', points, total: snapshots.length, parsed: points.length }));
+      ctrl.close();
+    },
   });
 
-  const points: PricePoint[] = results
-    .filter((r): r is PricePoint => r !== null)
-    .sort((a, b) => a.date.localeCompare(b.date));
-
-  return NextResponse.json({
-    points,
-    total: snapshots.length,
-    parsed: points.length,
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    },
   });
 }
