@@ -98,20 +98,39 @@ export async function GET(req: NextRequest) {
       log.header(`Kaspi Price Analytics — new request`);
       log.info(`URL: ${productUrl}`);
 
-      let snapshots;
+      // ── 1. Fetch live page for today's price (Railway can reach kaspi.kz) ───
+      const livePoint = await (async (): Promise<PricePoint | null> => {
+        const html = await fetchHtml(productUrl);
+        if (!html) return null;
+        productName = extractProductName(html);
+        const parsed = extractPriceData(html);
+        if (!parsed) return null;
+        const today = new Date().toISOString().split('T')[0];
+        log.price(today, parsed.price, parsed.shop, parsed.strategy + ' [live]');
+        return { date: today, price: parsed.price, shop: parsed.shop, timestamp: 'live' };
+      })();
+
+      // ── 2. Fetch Wayback Machine historical snapshots ─────────────────────
+      let snapshots: import('@/lib/wayback').Snapshot[] = [];
       try {
         snapshots = await getSnapshots(productUrl);
       } catch (e) {
         const msg = `Failed to query web archive: ${String(e)}`;
-        log.info(`ERROR: ${msg}`);
-        ctrl.enqueue(sse({ type: 'error', message: msg }));
+        log.info(`WARN: ${msg} — continuing with live price only`);
+        snapshots = [];
+      }
+
+      if (snapshots.length === 0 && !livePoint) {
+        log.info('No snapshots found and live fetch failed.');
+        ctrl.enqueue(sse({ type: 'done', points: [], total: 0, parsed: 0 }));
         ctrl.close();
         return;
       }
 
+      // If no archive snapshots but we have today's price, return just that
       if (snapshots.length === 0) {
-        log.info('No snapshots found in Wayback Machine.');
-        ctrl.enqueue(sse({ type: 'done', points: [], total: 0, parsed: 0 }));
+        log.summary(productName, livePoint ? 1 : 0, 0, Date.now() - startMs);
+        ctrl.enqueue(sse({ type: 'done', points: livePoint ? [livePoint] : [], total: 0, parsed: livePoint ? 1 : 0 }));
         ctrl.close();
         return;
       }
@@ -158,9 +177,16 @@ export async function GET(req: NextRequest) {
         }
       );
 
-      const points = rawResults
-        .filter((r): r is PricePoint => r !== null)
-        .sort((a, b) => a.date.localeCompare(b.date));
+      const archivePoints = rawResults.filter((r): r is PricePoint => r !== null);
+
+      // Merge live price (don't duplicate if archive already has today's date)
+      const today = new Date().toISOString().split('T')[0];
+      const allPoints: PricePoint[] = [...archivePoints];
+      if (livePoint && !allPoints.some((p) => p.date === today)) {
+        allPoints.push(livePoint);
+      }
+
+      const points = allPoints.sort((a, b) => a.date.localeCompare(b.date));
 
       log.summary(productName, points.length, snapshots.length, Date.now() - startMs);
 

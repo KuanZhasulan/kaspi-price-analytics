@@ -7,56 +7,88 @@ export interface Snapshot {
 }
 
 /**
- * Fetch available Wayback Machine snapshots for a URL.
- * Uses collapse=timestamp:6 to get at most one snapshot per month.
+ * Try multiple CDX URL patterns in parallel and merge unique results.
+ * Kaspi pages may be archived under several slightly-different URL forms.
  */
 export async function getSnapshots(productUrl: string): Promise<Snapshot[]> {
-  // Strip query params for broader matching, keep path only
-  let baseUrl = productUrl;
-  try {
-    const parsed = new URL(productUrl);
-    baseUrl = `${parsed.hostname}${parsed.pathname}`;
-  } catch {}
+  let hostname = '';
+  let pathname = '';
+  let cityParam = '';
 
+  try {
+    const u = new URL(productUrl);
+    hostname  = u.hostname;
+    pathname  = u.pathname;
+    cityParam = u.searchParams.get('c') ?? '';
+  } catch {
+    return [];
+  }
+
+  // Normalise pathname (ensure trailing slash)
+  const path = pathname.endsWith('/') ? pathname : pathname + '/';
+  const base = `${hostname}${path}`;
+
+  // Multiple patterns to maximise hit rate
+  const patterns = [
+    `${base}*`,                                              // any query params
+    `${base}?c=${cityParam}*`,                               // with city param
+    `${base}`,                                               // exact (no params)
+    `${hostname}${pathname.endsWith('/') ? pathname.slice(0,-1) : pathname}*`, // no trailing slash
+  ].filter(Boolean);
+
+  const allRows = await Promise.all(patterns.map((pat) => queryCdx(pat)));
+  const merged  = mergeSnapshots(allRows.flat(), productUrl);
+  return merged;
+}
+
+async function queryCdx(urlPattern: string): Promise<Snapshot[]> {
   const cdxUrl =
     `https://web.archive.org/cdx/search/cdx` +
-    `?url=${encodeURIComponent(baseUrl)}*` +
+    `?url=${encodeURIComponent(urlPattern)}` +
     `&output=json` +
     `&fl=timestamp,statuscode` +
     `&filter=statuscode:200` +
-    `&collapse=timestamp:6` +
-    `&limit=60` +
-    `&from=20190101`;
+    `&collapse=timestamp:6` +   // one per month
+    `&limit=100`;
 
-  // Retry up to 3 times — CDX API can be slow
-  let lastErr: unknown;
-  let response;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      response = await axios.get<string[][]>(cdxUrl, { timeout: 60_000 });
-      break;
-    } catch (e) {
-      lastErr = e;
+      const { data } = await axios.get<string[][]>(cdxUrl, { timeout: 60_000 });
+      if (!Array.isArray(data) || data.length <= 1) return [];
+      return data.slice(1).map(([ts]) => toSnapshot(ts, ''));
+    } catch {
       if (attempt < 3) await new Promise((r) => setTimeout(r, 2000 * attempt));
     }
   }
-  if (!response) throw lastErr;
-  const rows = response!.data;
-
-  if (!Array.isArray(rows) || rows.length <= 1) return [];
-
-  // rows[0] is the header ["timestamp","statuscode"]
-  return rows.slice(1).map(([timestamp]) => ({
-    timestamp,
-    archivedUrl: `https://web.archive.org/web/${timestamp}id_/${productUrl}`,
-    date: parseWaybackTimestamp(timestamp),
-  }));
+  return [];
 }
 
-function parseWaybackTimestamp(ts: string): Date {
-  // Format: YYYYMMDDHHmmss
-  const year = parseInt(ts.slice(0, 4), 10);
-  const month = parseInt(ts.slice(4, 6), 10) - 1;
-  const day = parseInt(ts.slice(6, 8), 10);
-  return new Date(year, month, day);
+/** Deduplicate by YYYYMM, keep earliest per month, build final archivedUrl */
+function mergeSnapshots(snaps: Snapshot[], productUrl: string): Snapshot[] {
+  const byMonth = new Map<string, string>(); // YYYYMM → timestamp
+  for (const s of snaps) {
+    const month = s.timestamp.slice(0, 6);
+    if (!byMonth.has(month) || s.timestamp < byMonth.get(month)!) {
+      byMonth.set(month, s.timestamp);
+    }
+  }
+  return Array.from(byMonth.values())
+    .sort()
+    .map((ts) => ({
+      timestamp: ts,
+      archivedUrl: `https://web.archive.org/web/${ts}id_/${productUrl}`,
+      date: parseTs(ts),
+    }));
+}
+
+function toSnapshot(ts: string, url: string): Snapshot {
+  return { timestamp: ts, archivedUrl: url, date: parseTs(ts) };
+}
+
+function parseTs(ts: string): Date {
+  return new Date(
+    parseInt(ts.slice(0, 4), 10),
+    parseInt(ts.slice(4, 6), 10) - 1,
+    parseInt(ts.slice(6, 8), 10)
+  );
 }

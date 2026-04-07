@@ -62,6 +62,7 @@ export function extractPriceData(html: string): ParsedData | null {
     fromMetaTags(html) ??
     fromScriptPriceFields(html) ??
     fromHtmlElements(html) ??
+    fromFormattedTenge(html) ??
     null
   );
 }
@@ -143,8 +144,8 @@ function fromScriptPriceFields(html: string): ParsedData | null {
 
     const prices: number[] = [];
 
-    // Match "minPrice":123456 / "price":123456 / "unitPrice":123456
-    const fieldRe = /"(?:min[Pp]rice|[Uu]nit[Pp]rice|[Pp]rice)"\s*:\s*(\d{4,9})/g;
+    // Match any price-related JSON field
+    const fieldRe = /"(?:min[Pp]rice|[Uu]nit[Pp]rice|[Pp]rice|selling[Pp]rice|current[Pp]rice|offer[Pp]rice|kaspi[Pp]rice|base[Pp]rice|total[Pp]rice|lowest[Pp]rice|final[Pp]rice)"\s*:\s*(\d{4,9})/g;
     let fm: RegExpExecArray | null;
     while ((fm = fieldRe.exec(content)) !== null) {
       const p = parseInt(fm[1], 10);
@@ -198,6 +199,26 @@ function fromHtmlElements(html: string): ParsedData | null {
     }
   }
   return null;
+}
+
+// ─── Strategy 5: formatted tenge amounts in raw HTML ─────────────────────────
+// Matches "89 990 ₸" or "1 234 567₸" or "89990₸" anywhere in the HTML
+
+function fromFormattedTenge(html: string): ParsedData | null {
+  // Match digits (with optional space-thousands-separators) immediately before ₸
+  const re = /(\d[\d\u00a0 ]{2,10}\d)\s*₸/g;
+  const prices: number[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    const p = parseInt(m[1].replace(/[\s\u00a0]/g, ''), 10);
+    if (isValid(p)) prices.push(p);
+  }
+  if (prices.length === 0) return null;
+  // Return the most common value (mode) — avoids outliers from shipping etc.
+  const freq = new Map<number, number>();
+  for (const p of prices) freq.set(p, (freq.get(p) ?? 0) + 1);
+  const best = Array.from(freq.entries()).sort((a, b) => b[1] - a[1])[0][0];
+  return { price: best, strategy: 'tenge-symbol' };
 }
 
 function findShop($: cheerio.CheerioAPI): string | undefined {
