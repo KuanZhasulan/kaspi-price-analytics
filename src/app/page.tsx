@@ -198,11 +198,15 @@ export default function Home() {
     <div className="min-h-screen bg-slate-950 text-slate-100">
       {/* Header */}
       <header className="border-b border-slate-800 bg-slate-950/90 backdrop-blur-sm sticky top-0 z-10">
-        <div className="max-w-5xl mx-auto px-4 h-14 flex items-center gap-3">
+        <div className="max-w-5xl mx-auto px-4 h-14 flex items-center gap-3 relative">
           <div className="w-7 h-7 rounded-lg bg-teal-500 flex items-center justify-center shrink-0">
             <TrendingUp className="w-4 h-4 text-slate-950" />
           </div>
           <span className="font-semibold text-sm text-slate-200">Kaspi Price Analytics</span>
+          <span className="absolute left-1/2 -translate-x-1/2 text-xs text-slate-500">
+            developed by <span className="text-slate-400">Kuan Zhassulan</span>{' '}
+            <span className="text-slate-600">(KZ)</span>
+          </span>
           <span className="ml-auto text-xs bg-slate-800 text-slate-400 border border-slate-700 rounded-full px-3 py-1">
             Wayback Machine
           </span>
