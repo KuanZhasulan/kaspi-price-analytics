@@ -1,0 +1,164 @@
+import * as cheerio from 'cheerio';
+
+export interface ParsedData {
+  price: number;
+  shop?: string;
+}
+
+/**
+ * Extract price (and optionally shop name) from a Kaspi product page HTML.
+ * Tries multiple strategies in order of reliability.
+ */
+export function extractPriceData(html: string): ParsedData | null {
+  return (
+    fromJsonLd(html) ??
+    fromMetaTags(html) ??
+    fromScriptPriceFields(html) ??
+    fromHtmlElements(html) ??
+    null
+  );
+}
+
+// ─── Strategy 1: JSON-LD structured data ────────────────────────────────────
+
+function fromJsonLd(html: string): ParsedData | null {
+  const re = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html)) !== null) {
+    try {
+      const data = JSON.parse(m[1]);
+      const result = searchJsonLdForOffers(data);
+      if (result) return result;
+    } catch {}
+  }
+  return null;
+}
+
+function searchJsonLdForOffers(obj: unknown): ParsedData | null {
+  if (!obj || typeof obj !== 'object') return null;
+  const o = obj as Record<string, unknown>;
+
+  if (o.offers) {
+    const offerList = Array.isArray(o.offers) ? o.offers : [o.offers];
+    for (const offer of offerList as Record<string, unknown>[]) {
+      const rawPrice = offer.price ?? offer.lowPrice;
+      if (rawPrice != null) {
+        const price = parseFloat(String(rawPrice).replace(/[^0-9.]/g, ''));
+        if (isValid(price)) {
+          return {
+            price,
+            shop: typeof offer.seller === 'object' && offer.seller !== null
+              ? String((offer.seller as Record<string, unknown>).name ?? '')
+              : undefined,
+          };
+        }
+      }
+    }
+  }
+
+  for (const val of Object.values(o)) {
+    const found = searchJsonLdForOffers(val);
+    if (found) return found;
+  }
+  return null;
+}
+
+// ─── Strategy 2: Meta tags ───────────────────────────────────────────────────
+
+function fromMetaTags(html: string): ParsedData | null {
+  const $ = cheerio.load(html);
+  const content =
+    $('meta[property="product:price:amount"]').attr('content') ??
+    $('meta[property="og:price:amount"]').attr('content') ??
+    $('meta[name="price"]').attr('content');
+
+  if (content) {
+    const price = parseFloat(content.replace(/[^0-9.]/g, ''));
+    if (isValid(price)) return { price };
+  }
+  return null;
+}
+
+// ─── Strategy 3: price fields in <script> tags (covers Nuxt SSR / __NUXT__) ─
+
+function fromScriptPriceFields(html: string): ParsedData | null {
+  const scriptRe = /<script(?:\s[^>]*)?>([^<]{200,})<\/script>/gi;
+  let m: RegExpExecArray | null;
+
+  while ((m = scriptRe.exec(html)) !== null) {
+    const content = m[1];
+    if (!/price/i.test(content)) continue;
+
+    const prices: number[] = [];
+
+    // Match "minPrice":123456 / "price":123456 / "unitPrice":123456
+    const fieldRe = /"(?:min[Pp]rice|[Uu]nit[Pp]rice|[Pp]rice)"\s*:\s*(\d{4,9})/g;
+    let fm: RegExpExecArray | null;
+    while ((fm = fieldRe.exec(content)) !== null) {
+      const p = parseInt(fm[1], 10);
+      if (isValid(p)) prices.push(p);
+    }
+
+    if (prices.length > 0) {
+      return { price: Math.min(...prices) };
+    }
+  }
+  return null;
+}
+
+// ─── Strategy 4: HTML elements ───────────────────────────────────────────────
+
+const PRICE_SELECTORS = [
+  '.item__price-once',
+  '.price__value',
+  '.product-price__value',
+  '[data-price]',
+  '.offer-price',
+  '.price-cell',
+];
+
+const SHOP_SELECTORS = [
+  '.item__merchant-link',
+  '.merchant-name',
+  '.offer__merchant',
+  '[data-merchant]',
+];
+
+function fromHtmlElements(html: string): ParsedData | null {
+  const $ = cheerio.load(html);
+
+  for (const sel of PRICE_SELECTORS) {
+    const el = $(sel).first();
+    if (!el.length) continue;
+
+    // Check data-price attribute first
+    const attr = el.attr('data-price');
+    if (attr) {
+      const p = parseFloat(attr.replace(/[^0-9.]/g, ''));
+      if (isValid(p)) return { price: p, shop: findShop($) };
+    }
+
+    // Fall back to text content
+    const text = el.text().replace(/[^0-9]/g, '');
+    if (text.length >= 4) {
+      const p = parseInt(text, 10);
+      if (isValid(p)) return { price: p, shop: findShop($) };
+    }
+  }
+  return null;
+}
+
+function findShop($: cheerio.CheerioAPI): string | undefined {
+  for (const sel of SHOP_SELECTORS) {
+    const text = $(sel).first().text().trim();
+    if (text) return text;
+  }
+  return undefined;
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/** Reasonable KZT price range: 1 000 – 100 000 000 tenge */
+function isValid(price: number): boolean {
+  return Number.isFinite(price) && price >= 1_000 && price <= 100_000_000;
+}
