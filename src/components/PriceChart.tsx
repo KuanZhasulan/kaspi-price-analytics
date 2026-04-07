@@ -10,6 +10,24 @@ import {
   ResponsiveContainer,
   ReferenceLine,
 } from 'recharts';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import { Separator } from '@/components/ui/separator';
+import { TrendingDown, TrendingUp, Minus } from 'lucide-react';
 import type { PricePoint } from '@/app/api/prices/route';
 
 interface Props {
@@ -18,26 +36,26 @@ interface Props {
   parsed: number;
 }
 
-function fmt(price: number): string {
-  return new Intl.NumberFormat('ru-RU').format(price) + ' ₸';
+function fmt(n: number) {
+  return new Intl.NumberFormat('ru-RU').format(n) + ' ₸';
 }
 
-function fmtDate(dateStr: string): string {
-  const [y, m] = dateStr.split('-');
+function fmtDate(s: string) {
+  const [y, m] = s.split('-');
   const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   return `${months[parseInt(m) - 1]} ${y}`;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function CustomTooltip({ active, payload }: any) {
+function ChartTooltip({ active, payload }: any) {
   if (!active || !payload?.length) return null;
   const p = payload[0].payload as PricePoint;
   return (
-    <div className="bg-slate-800 border border-slate-600 rounded-lg p-3 shadow-2xl">
-      <p className="text-slate-400 text-xs mb-1">{fmtDate(p.date)}</p>
-      <p className="text-teal-300 font-bold text-base">{fmt(p.price)}</p>
-      {p.shop && <p className="text-slate-300 text-xs mt-1">{p.shop}</p>}
-    </div>
+    <Card className="shadow-2xl border-border/80 py-3 px-4 gap-1">
+      <p className="text-xs text-muted-foreground">{fmtDate(p.date)}</p>
+      <p className="text-base font-bold text-primary">{fmt(p.price)}</p>
+      {p.shop && <p className="text-xs text-muted-foreground">{p.shop}</p>}
+    </Card>
   );
 }
 
@@ -51,120 +69,159 @@ export default function PriceChart({ data, total, parsed }: Props) {
   const changePct = firstPrice > 0 ? ((change / firstPrice) * 100).toFixed(1) : '0';
   const hasShops = data.some((d) => d.shop);
 
+  const TrendIcon =
+    change > 0 ? TrendingUp : change < 0 ? TrendingDown : Minus;
+  const trendColor =
+    change > 0 ? 'text-destructive' : change < 0 ? 'text-green-400' : 'text-muted-foreground';
+
   return (
     <div className="space-y-4">
-      {/* Stats row */}
+      {/* Stat cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        {[
-          { label: 'Lowest', value: fmt(minPrice), color: 'text-green-400' },
-          { label: 'Highest', value: fmt(maxPrice), color: 'text-red-400' },
-          { label: 'First recorded', value: fmt(firstPrice), color: 'text-slate-200' },
-          {
-            label: 'Change',
-            value: `${change >= 0 ? '+' : ''}${fmt(change)}`,
-            sub: `${change >= 0 ? '+' : ''}${changePct}%`,
-            color: change > 0 ? 'text-red-400' : change < 0 ? 'text-green-400' : 'text-slate-200',
-          },
-        ].map((s) => (
-          <div key={s.label} className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-            <p className="text-slate-500 text-xs mb-1">{s.label}</p>
-            <p className={`font-semibold text-sm ${s.color}`}>{s.value}</p>
-            {s.sub && <p className={`text-xs ${s.color} opacity-70`}>{s.sub}</p>}
-          </div>
-        ))}
+        <Card>
+          <CardHeader className="pb-1 pt-4 px-4">
+            <CardDescription className="text-xs">Lowest price</CardDescription>
+          </CardHeader>
+          <CardContent className="px-4 pb-4">
+            <p className="text-lg font-bold text-green-400 tabular-nums">{fmt(minPrice)}</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-1 pt-4 px-4">
+            <CardDescription className="text-xs">Highest price</CardDescription>
+          </CardHeader>
+          <CardContent className="px-4 pb-4">
+            <p className="text-lg font-bold text-destructive tabular-nums">{fmt(maxPrice)}</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-1 pt-4 px-4">
+            <CardDescription className="text-xs">First recorded</CardDescription>
+          </CardHeader>
+          <CardContent className="px-4 pb-4">
+            <p className="text-lg font-bold tabular-nums">{fmt(firstPrice)}</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-1 pt-4 px-4">
+            <CardDescription className="text-xs">Total change</CardDescription>
+          </CardHeader>
+          <CardContent className="px-4 pb-4">
+            <div className="flex items-center gap-1.5">
+              <TrendIcon className={`w-4 h-4 ${trendColor}`} />
+              <p className={`text-lg font-bold tabular-nums ${trendColor}`}>
+                {change >= 0 ? '+' : ''}{fmt(change)}
+              </p>
+            </div>
+            <p className={`text-xs mt-0.5 ${trendColor} opacity-70`}>
+              {change >= 0 ? '+' : ''}{changePct}%
+            </p>
+          </CardContent>
+        </Card>
       </div>
 
       {/* Chart */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
-        <div className="flex justify-between items-center mb-6">
-          <h2 className="text-white font-semibold">Price over time</h2>
-          <span className="text-slate-500 text-xs">
-            {parsed} data point{parsed !== 1 ? 's' : ''} from {total} archive{total !== 1 ? 's' : ''}
-          </span>
-        </div>
-        <ResponsiveContainer width="100%" height={380}>
-          <AreaChart data={data} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
-            <defs>
-              <linearGradient id="grad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#2dd4bf" stopOpacity={0.25} />
-                <stop offset="95%" stopColor="#2dd4bf" stopOpacity={0} />
-              </linearGradient>
-            </defs>
-            <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-            <XAxis
-              dataKey="date"
-              tick={{ fill: '#64748b', fontSize: 11 }}
-              tickLine={false}
-              tickFormatter={fmtDate}
-              interval="preserveStartEnd"
-            />
-            <YAxis
-              tick={{ fill: '#64748b', fontSize: 11 }}
-              tickLine={false}
-              axisLine={false}
-              tickFormatter={(v: number) =>
-                v >= 1_000_000
-                  ? `${(v / 1_000_000).toFixed(1)}M`
-                  : `${(v / 1_000).toFixed(0)}K`
-              }
-              domain={['auto', 'auto']}
-              width={52}
-            />
-            <Tooltip content={<CustomTooltip />} />
-            <ReferenceLine
-              y={minPrice}
-              stroke="#4ade80"
-              strokeDasharray="4 4"
-              strokeOpacity={0.4}
-            />
-            <Area
-              type="monotone"
-              dataKey="price"
-              stroke="#2dd4bf"
-              strokeWidth={2}
-              fill="url(#grad)"
-              dot={{ fill: '#2dd4bf', r: 4, strokeWidth: 0 }}
-              activeDot={{ r: 6, fill: '#fff', stroke: '#2dd4bf', strokeWidth: 2 }}
-            />
-          </AreaChart>
-        </ResponsiveContainer>
-      </div>
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="text-base">Price over time</CardTitle>
+              <CardDescription className="text-xs mt-0.5">
+                {parsed} data point{parsed !== 1 ? 's' : ''} extracted from {total} archive
+                snapshot{total !== 1 ? 's' : ''}
+              </CardDescription>
+            </div>
+            <Badge variant="secondary" className="text-xs">KZT</Badge>
+          </div>
+        </CardHeader>
+        <Separator className="opacity-50" />
+        <CardContent className="pt-6 pr-4 pl-2 pb-4">
+          <ResponsiveContainer width="100%" height={380}>
+            <AreaChart data={data} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
+              <defs>
+                <linearGradient id="priceGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="var(--primary)" stopOpacity={0.2} />
+                  <stop offset="95%" stopColor="var(--primary)" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="oklch(1 0 0 / 6%)" />
+              <XAxis
+                dataKey="date"
+                tick={{ fill: 'oklch(0.55 0 0)', fontSize: 11 }}
+                tickLine={false}
+                axisLine={false}
+                tickFormatter={fmtDate}
+                interval="preserveStartEnd"
+              />
+              <YAxis
+                tick={{ fill: 'oklch(0.55 0 0)', fontSize: 11 }}
+                tickLine={false}
+                axisLine={false}
+                tickFormatter={(v: number) =>
+                  v >= 1_000_000 ? `${(v / 1_000_000).toFixed(1)}M` : `${(v / 1_000).toFixed(0)}K`
+                }
+                domain={['auto', 'auto']}
+                width={50}
+              />
+              <Tooltip content={<ChartTooltip />} cursor={{ stroke: 'oklch(1 0 0 / 10%)' }} />
+              <ReferenceLine
+                y={minPrice}
+                stroke="var(--chart-green, oklch(0.70 0.17 150))"
+                strokeDasharray="4 4"
+                strokeOpacity={0.5}
+              />
+              <Area
+                type="monotone"
+                dataKey="price"
+                stroke="var(--primary)"
+                strokeWidth={2}
+                fill="url(#priceGrad)"
+                dot={{ fill: 'var(--primary)', r: 3, strokeWidth: 0 }}
+                activeDot={{ r: 5, fill: '#fff', stroke: 'var(--primary)', strokeWidth: 2 }}
+              />
+            </AreaChart>
+          </ResponsiveContainer>
+        </CardContent>
+      </Card>
 
       {/* Table */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-800">
-          <h3 className="text-white font-semibold text-sm">All price points</h3>
-        </div>
-        <div className="overflow-x-auto max-h-72 overflow-y-auto">
-          <table className="w-full text-sm">
-            <thead className="sticky top-0 bg-slate-900">
-              <tr className="text-slate-500 text-left text-xs">
-                <th className="px-5 py-3 font-medium">Date</th>
-                <th className="px-5 py-3 font-medium">Price</th>
-                {hasShops && <th className="px-5 py-3 font-medium">Shop</th>}
-              </tr>
-            </thead>
-            <tbody>
-              {data.map((point, i) => (
-                <tr
-                  key={point.timestamp}
-                  className={`border-t border-slate-800 hover:bg-slate-800/40 transition-colors ${
-                    i % 2 === 0 ? '' : 'bg-slate-900/40'
-                  }`}
-                >
-                  <td className="px-5 py-3 text-slate-400">{fmtDate(point.date)}</td>
-                  <td className="px-5 py-3 text-teal-300 font-medium tabular-nums">
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">All price points</CardTitle>
+        </CardHeader>
+        <Separator className="opacity-50" />
+        <div className="max-h-72 overflow-y-auto">
+          <Table>
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                <TableHead className="text-xs">Date</TableHead>
+                <TableHead className="text-xs">Price</TableHead>
+                {hasShops && <TableHead className="text-xs">Shop</TableHead>}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {data.map((point) => (
+                <TableRow key={point.timestamp}>
+                  <TableCell className="text-sm text-muted-foreground">
+                    {fmtDate(point.date)}
+                  </TableCell>
+                  <TableCell className="text-sm font-medium text-primary tabular-nums">
                     {fmt(point.price)}
-                  </td>
+                  </TableCell>
                   {hasShops && (
-                    <td className="px-5 py-3 text-slate-400">{point.shop ?? '—'}</td>
+                    <TableCell className="text-sm text-muted-foreground">
+                      {point.shop ?? '—'}
+                    </TableCell>
                   )}
-                </tr>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
-      </div>
+      </Card>
     </div>
   );
 }
