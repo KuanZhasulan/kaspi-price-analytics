@@ -155,17 +155,19 @@ function fromBackendState(html: string): ParsedData | null {
 // ─── Strategy 3: price fields in <script> tags (covers Nuxt SSR / __NUXT__) ─
 
 function fromScriptPriceFields(html: string): ParsedData | null {
-  const scriptRe = /<script(?:\s[^>]*)?>([^<]{200,})<\/script>/gi;
+  // Extract all script tag contents — allow < inside (e.g. in BACKEND JSON descriptions)
+  const scriptRe = /<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi;
   let m: RegExpExecArray | null;
 
   while ((m = scriptRe.exec(html)) !== null) {
     const content = m[1];
+    if (content.length < 50) continue;
     if (!/price/i.test(content)) continue;
 
     const prices: number[] = [];
 
     // Match any price-related JSON field
-    const fieldRe = /"(?:min[Pp]rice|[Uu]nit[Pp]rice|[Pp]rice|selling[Pp]rice|current[Pp]rice|offer[Pp]rice|kaspi[Pp]rice|base[Pp]rice|total[Pp]rice|lowest[Pp]rice|final[Pp]rice)"\s*:\s*(\d{4,9})/g;
+    const fieldRe = /"(?:min[Pp]rice|[Uu]nit[Pp]rice|[Pp]rice|selling[Pp]rice|current[Pp]rice|offer[Pp]rice|kaspi[Pp]rice|base[Pp]rice|total[Pp]rice|lowest[Pp]rice|final[Pp]rice|unitPriceBeforeDiscount|displayPrice|priceValue)"\s*:\s*(\d{4,9})/g;
     let fm: RegExpExecArray | null;
     while ((fm = fieldRe.exec(content)) !== null) {
       const p = parseInt(fm[1], 10);
