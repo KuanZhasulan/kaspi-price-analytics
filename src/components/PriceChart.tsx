@@ -14,6 +14,22 @@ import { Badge } from '@/components/ui/badge';
 import { TrendingDown, TrendingUp, Minus } from 'lucide-react';
 import type { PricePoint } from '@/app/api/prices/route';
 
+const SOURCE_LABELS: Record<PricePoint['source'], { label: string; className: string }> = {
+  live:           { label: 'Live',          className: 'bg-teal-950 text-teal-300 border-teal-800' },
+  wayback:        { label: 'Wayback',       className: 'bg-blue-950 text-blue-300 border-blue-800' },
+  'archive.today':{ label: 'Archive.today', className: 'bg-purple-950 text-purple-300 border-purple-800' },
+  yandex:         { label: 'Yandex',        className: 'bg-orange-950 text-orange-300 border-orange-800' },
+};
+
+function SourceBadge({ source }: { source: PricePoint['source'] }) {
+  const s = SOURCE_LABELS[source] ?? SOURCE_LABELS.wayback;
+  return (
+    <span className={`inline-block text-xs px-2 py-0.5 rounded-full border font-medium ${s.className}`}>
+      {s.label}
+    </span>
+  );
+}
+
 // Use literal colors for SVG / Recharts (CSS vars don't resolve in SVG attributes)
 const C = {
   teal: '#2dd4bf',
@@ -182,6 +198,7 @@ export default function PriceChart({ data, total, parsed }: Props) {
               <tr className="border-b border-border">
                 <th className="px-5 py-3 text-left text-xs font-medium text-muted-foreground">Date</th>
                 <th className="px-5 py-3 text-left text-xs font-medium text-muted-foreground">Price</th>
+                <th className="px-5 py-3 text-left text-xs font-medium text-muted-foreground">Source</th>
                 {hasShops && (
                   <th className="px-5 py-3 text-left text-xs font-medium text-muted-foreground">Shop</th>
                 )}
@@ -196,6 +213,9 @@ export default function PriceChart({ data, total, parsed }: Props) {
                   <td className="px-5 py-3 text-muted-foreground">{fmtDate(point.date)}</td>
                   <td className="px-5 py-3 font-medium tabular-nums" style={{ color: C.teal }}>
                     {fmt(point.price)}
+                  </td>
+                  <td className="px-5 py-3">
+                    <SourceBadge source={point.source} />
                   </td>
                   {hasShops && (
                     <td className="px-5 py-3 text-muted-foreground">{point.shop ?? '—'}</td>

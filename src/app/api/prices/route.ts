@@ -1,6 +1,8 @@
 import { NextRequest } from 'next/server';
 import axios from 'axios';
-import { getSnapshots } from '@/lib/wayback';
+import { getSnapshots, type Snapshot } from '@/lib/wayback';
+import { getArchiveTodaySnapshots } from '@/lib/archiveToday';
+import { fetchYandexCache } from '@/lib/yandexCache';
 import { extractPriceData, extractProductName } from '@/lib/parser';
 import { log } from '@/lib/log';
 
@@ -9,6 +11,7 @@ export interface PricePoint {
   price: number;
   shop?: string;
   timestamp: string;
+  source: 'live' | 'wayback' | 'archive.today' | 'yandex';
 }
 
 export type SSEEvent =
@@ -70,6 +73,23 @@ async function mapConcurrent<T, R>(
   return results;
 }
 
+/** Merge snapshot lists, dedup by YYYYMM, keep earliest per month */
+function mergeByMonth(
+  groups: Array<{ snaps: Snapshot[]; source: PricePoint['source'] }>
+): Array<Snapshot & { source: PricePoint['source'] }> {
+  const byMonth = new Map<string, Snapshot & { source: PricePoint['source'] }>();
+  for (const { snaps, source } of groups) {
+    for (const s of snaps) {
+      const month = s.timestamp.slice(0, 6);
+      const existing = byMonth.get(month);
+      if (!existing || s.timestamp < existing.timestamp) {
+        byMonth.set(month, { ...s, source });
+      }
+    }
+  }
+  return Array.from(byMonth.values()).sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+}
+
 export async function GET(req: NextRequest) {
   const raw = req.nextUrl.searchParams.get('url');
 
@@ -95,102 +115,106 @@ export async function GET(req: NextRequest) {
       const startMs = Date.now();
       let productName: string | null = null;
 
-      log.header(`Kaspi Price Analytics — new request`);
+      log.header('Kaspi Price Analytics — new request');
       log.info(`URL: ${productUrl}`);
 
-      // ── 1. Fetch live page for today's price (Railway can reach kaspi.kz) ───
-      const livePoint = await (async (): Promise<PricePoint | null> => {
-        const html = await fetchHtml(productUrl);
-        if (!html) return null;
-        productName = extractProductName(html);
-        const parsed = extractPriceData(html);
-        if (!parsed) return null;
-        const today = new Date().toISOString().split('T')[0];
-        log.price(today, parsed.price, parsed.shop, parsed.strategy + ' [live]');
-        return { date: today, price: parsed.price, shop: parsed.shop, timestamp: 'live' };
-      })();
+      // ── Step 1: Live page + all archive sources in parallel ───────────────
+      const [liveHtml, waybackSnaps, archiveTodaySnaps, yandexHtml] = await Promise.all([
+        fetchHtml(productUrl),
+        getSnapshots(productUrl).catch(() => [] as Snapshot[]),
+        getArchiveTodaySnapshots(productUrl).catch(() => [] as Snapshot[]),
+        fetchYandexCache(productUrl).catch(() => null),
+      ]);
 
-      // ── 2. Fetch Wayback Machine historical snapshots ─────────────────────
-      let snapshots: import('@/lib/wayback').Snapshot[] = [];
-      try {
-        snapshots = await getSnapshots(productUrl);
-      } catch (e) {
-        const msg = `Failed to query web archive: ${String(e)}`;
-        log.info(`WARN: ${msg} — continuing with live price only`);
-        snapshots = [];
+      log.info(
+        `Sources: live=${!!liveHtml} wayback=${waybackSnaps.length} archive.today=${archiveTodaySnaps.length} yandex=${!!yandexHtml}`
+      );
+
+      // ── Step 2: Extract live price ────────────────────────────────────────
+      const today = new Date().toISOString().split('T')[0];
+      let livePoint: PricePoint | null = null;
+
+      if (liveHtml) {
+        productName = extractProductName(liveHtml);
+        const parsed = extractPriceData(liveHtml);
+        if (parsed) {
+          log.price(today, parsed.price, parsed.shop, parsed.strategy + ' [live]');
+          livePoint = { date: today, price: parsed.price, shop: parsed.shop, timestamp: 'live', source: 'live' };
+        }
       }
 
-      if (snapshots.length === 0 && !livePoint) {
-        log.info('No snapshots found and live fetch failed.');
+      // ── Step 3: Extract Yandex cache price (treated as near-current) ──────
+      let yandexPoint: PricePoint | null = null;
+      if (yandexHtml) {
+        const parsed = extractPriceData(yandexHtml);
+        if (parsed) {
+          // Use today's date since Yandex cache is recent (no timestamp available)
+          if (!livePoint) {
+            log.price(today, parsed.price, parsed.shop, parsed.strategy + ' [yandex]');
+            yandexPoint = { date: today, price: parsed.price, shop: parsed.shop, timestamp: 'yandex', source: 'yandex' };
+          }
+        }
+      }
+
+      // ── Step 4: Merge archive snapshots from Wayback + Archive.today ──────
+      const allSnaps = mergeByMonth([
+        { snaps: waybackSnaps, source: 'wayback' },
+        { snaps: archiveTodaySnaps, source: 'archive.today' },
+      ]);
+
+      if (allSnaps.length === 0 && !livePoint && !yandexPoint) {
+        log.info('No data found from any source.');
         ctrl.enqueue(sse({ type: 'done', points: [], total: 0, parsed: 0 }));
         ctrl.close();
         return;
       }
 
-      // If no archive snapshots but we have today's price, return just that
-      if (snapshots.length === 0) {
-        log.summary(productName, livePoint ? 1 : 0, 0, Date.now() - startMs);
-        ctrl.enqueue(sse({ type: 'done', points: livePoint ? [livePoint] : [], total: 0, parsed: livePoint ? 1 : 0 }));
+      if (allSnaps.length === 0) {
+        const pts = [livePoint, yandexPoint].filter(Boolean) as PricePoint[];
+        log.summary(productName, pts.length, 0, Date.now() - startMs);
+        ctrl.enqueue(sse({ type: 'done', points: pts, total: 0, parsed: pts.length }));
         ctrl.close();
         return;
       }
 
-      log.found(snapshots.length, productUrl);
-      ctrl.enqueue(sse({ type: 'snapshots', total: snapshots.length }));
+      log.found(allSnaps.length, productUrl);
+      ctrl.enqueue(sse({ type: 'snapshots', total: allSnaps.length }));
 
+      // ── Step 5: Fetch + parse each archive snapshot ───────────────────────
       let done = 0;
       const rawResults = await mapConcurrent(
-        snapshots,
+        allSnaps,
         4,
         async (snap) => {
           const date = snap.date.toISOString().split('T')[0];
           const html = await fetchHtml(snap.archivedUrl);
-
-          if (!html) {
-            log.miss(date);
-            return null;
-          }
-
-          // Grab product name from the first successful HTML fetch
-          if (!productName) {
-            productName = extractProductName(html);
-          }
-
+          if (!html) { log.miss(date); return null; }
+          if (!productName) productName = extractProductName(html);
           const parsed = extractPriceData(html);
-          if (!parsed) {
-            log.miss(date);
-            return null;
-          }
-
-          log.price(date, parsed.price, parsed.shop, parsed.strategy);
-
-          return {
-            date,
-            price: parsed.price,
-            shop: parsed.shop || undefined,
-            timestamp: snap.timestamp,
-          } as PricePoint;
+          if (!parsed) { log.miss(date); return null; }
+          log.price(date, parsed.price, parsed.shop, `${parsed.strategy} [${snap.source}]`);
+          return { date, price: parsed.price, shop: parsed.shop || undefined, timestamp: snap.timestamp, source: snap.source } as PricePoint;
         },
         () => {
           done++;
-          ctrl.enqueue(sse({ type: 'progress', done, total: snapshots.length }));
+          ctrl.enqueue(sse({ type: 'progress', done, total: allSnaps.length }));
         }
       );
 
+      // ── Step 6: Merge everything, dedup by date ───────────────────────────
       const archivePoints = rawResults.filter((r): r is PricePoint => r !== null);
-
-      // Merge live price (don't duplicate if archive already has today's date)
-      const today = new Date().toISOString().split('T')[0];
       const allPoints: PricePoint[] = [...archivePoints];
-      if (livePoint && !allPoints.some((p) => p.date === today)) {
-        allPoints.push(livePoint);
+
+      for (const pt of [yandexPoint, livePoint]) {
+        if (pt && !allPoints.some((p) => p.date === pt.date)) {
+          allPoints.push(pt);
+        }
       }
 
       const points = allPoints.sort((a, b) => a.date.localeCompare(b.date));
+      log.summary(productName, points.length, allSnaps.length, Date.now() - startMs);
 
-      log.summary(productName, points.length, snapshots.length, Date.now() - startMs);
-
-      ctrl.enqueue(sse({ type: 'done', points, total: snapshots.length, parsed: points.length }));
+      ctrl.enqueue(sse({ type: 'done', points, total: allSnaps.length, parsed: points.length }));
       ctrl.close();
     },
   });

@@ -51,16 +51,13 @@ async function queryCdx(urlPattern: string): Promise<Snapshot[]> {
     `&collapse=timestamp:6` +   // one per month
     `&limit=100`;
 
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      const { data } = await axios.get<string[][]>(cdxUrl, { timeout: 60_000 });
-      if (!Array.isArray(data) || data.length <= 1) return [];
-      return data.slice(1).map(([ts]) => toSnapshot(ts, ''));
-    } catch {
-      if (attempt < 3) await new Promise((r) => setTimeout(r, 2000 * attempt));
-    }
+  try {
+    const { data } = await axios.get<string[][]>(cdxUrl, { timeout: 15_000 });
+    if (!Array.isArray(data) || data.length <= 1) return [];
+    return data.slice(1).map(([ts]) => toSnapshot(ts, ''));
+  } catch {
+    return [];
   }
-  return [];
 }
 
 /** Deduplicate by YYYYMM, keep earliest per month, build final archivedUrl */

@@ -40,10 +40,16 @@ export function extractProductName(html: string): string | null {
 function findNameInJsonLd(obj: unknown): string | null {
   if (!obj || typeof obj !== 'object') return null;
   const o = obj as Record<string, unknown>;
-  if (typeof o.name === 'string' && o.name.length > 3) return o.name;
+  // Skip Organization nodes — we want Product name, not site name
+  if (o['@type'] === 'Organization' || o['@type'] === 'WebSite') return null;
+  if (o['@type'] === 'Product' && typeof o.name === 'string' && o.name.length > 3) return o.name as string;
   for (const val of Object.values(o)) {
     const found = findNameInJsonLd(val);
     if (found) return found;
+  }
+  // Fallback: any name field in a non-Organization context
+  if (typeof o.name === 'string' && o.name.length > 3 && !o.name.toLowerCase().includes('kaspi')) {
+    return o.name as string;
   }
   return null;
 }
