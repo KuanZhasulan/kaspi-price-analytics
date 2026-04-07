@@ -66,6 +66,7 @@ export function extractPriceData(html: string): ParsedData | null {
   return (
     fromJsonLd(html) ??
     fromMetaTags(html) ??
+    fromBackendState(html) ??
     fromScriptPriceFields(html) ??
     fromHtmlElements(html) ??
     fromFormattedTenge(html) ??
@@ -136,6 +137,19 @@ function fromMetaTags(html: string): ParsedData | null {
     if (isValid(price)) return { price, strategy: 'meta' };
   }
   return null;
+}
+
+// ─── Strategy 2.5: Kaspi BACKEND.components.item state ──────────────────────
+// Kaspi SSR embeds product data as BACKEND.components.item = {...}
+// The script contains literal < chars (e.g. in descriptions) so the generic
+// [^<] script regex misses it — handle it with a targeted extraction.
+
+function fromBackendState(html: string): ParsedData | null {
+  const m = html.match(/"price"\s*:\s*(\d{4,9})\s*[,}]/);
+  if (!m) return null;
+  const price = parseInt(m[1], 10);
+  if (!isValid(price)) return null;
+  return { price, strategy: 'backend-state' };
 }
 
 // ─── Strategy 3: price fields in <script> tags (covers Nuxt SSR / __NUXT__) ─
