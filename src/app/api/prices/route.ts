@@ -18,7 +18,10 @@ export interface PricePoint {
   source: SourceId;
 }
 
+export type SourceStatus = 'ok' | 'empty' | 'error';
+
 export type SSEEvent =
+  | { type: 'source'; source: SourceId; status: SourceStatus; count: number }
   | { type: 'snapshots'; total: number }
   | { type: 'progress'; done: number; total: number }
   | { type: 'done'; points: PricePoint[]; total: number; parsed: number }
@@ -175,6 +178,14 @@ export async function GET(req: NextRequest) {
         `archive.today:${archiveTodaySnaps.length} memento:${mementoSnaps.length} ` +
         `cc:${ccSnaps.length} yandex:${!!yandexHtml}`
       );
+
+      // Emit per-source status so the UI can show a source status panel
+      ctrl.enqueue(sse({ type: 'source', source: 'live',          status: liveHtml              ? 'ok' : 'error', count: liveHtml              ? 1                      : 0 }));
+      ctrl.enqueue(sse({ type: 'source', source: 'wayback',       status: waybackSnaps.length   ? 'ok' : 'empty', count: waybackSnaps.length                               }));
+      ctrl.enqueue(sse({ type: 'source', source: 'archive.today', status: archiveTodaySnaps.length ? 'ok' : 'empty', count: archiveTodaySnaps.length                       }));
+      ctrl.enqueue(sse({ type: 'source', source: 'memento',       status: mementoSnaps.length   ? 'ok' : 'empty', count: mementoSnaps.length                               }));
+      ctrl.enqueue(sse({ type: 'source', source: 'common-crawl',  status: ccSnaps.length        ? 'ok' : 'empty', count: ccSnaps.length                                    }));
+      ctrl.enqueue(sse({ type: 'source', source: 'yandex',        status: yandexHtml            ? 'ok' : 'empty', count: yandexHtml            ? 1                      : 0 }));
 
       // ── Step 2: Live price ────────────────────────────────────────────────
       const today = new Date().toISOString().split('T')[0];

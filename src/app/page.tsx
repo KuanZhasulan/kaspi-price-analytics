@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef } from 'react';
-import type { PricePoint, SSEEvent } from '@/app/api/prices/route';
+import type { PricePoint, SSEEvent, SourceId, SourceStatus } from '@/app/api/prices/route';
 import PriceChart from '@/components/PriceChart';
 import { Search, TrendingUp } from 'lucide-react';
 
@@ -14,6 +14,80 @@ interface Result {
 interface Progress {
   done: number;
   total: number;
+}
+
+// ─── Source status panel ──────────────────────────────────────────────────────
+
+const ALL_SOURCES: SourceId[] = ['live', 'wayback', 'archive.today', 'common-crawl', 'memento', 'yandex'];
+
+const SOURCE_LABELS: Record<SourceId, string> = {
+  live:            'Live',
+  wayback:         'Wayback Machine',
+  'archive.today': 'Archive.today',
+  memento:         'Memento',
+  'common-crawl':  'Common Crawl',
+  yandex:          'Yandex Cache',
+};
+
+type SourceState = { status: 'checking' | SourceStatus; count: number };
+type SourceStatuses = Record<SourceId, SourceState>;
+
+function initSourceStatuses(): SourceStatuses {
+  return Object.fromEntries(
+    ALL_SOURCES.map((id) => [id, { status: 'checking', count: 0 }])
+  ) as SourceStatuses;
+}
+
+function StatusDot({ status }: { status: SourceState['status'] }) {
+  if (status === 'checking')
+    return <span className="w-2 h-2 rounded-full bg-slate-600 animate-pulse shrink-0" />;
+  if (status === 'ok')
+    return <span className="w-2 h-2 rounded-full bg-teal-500 shrink-0" />;
+  if (status === 'empty')
+    return <span className="w-2 h-2 rounded-full bg-slate-700 border border-slate-600 shrink-0" />;
+  // error
+  return <span className="w-2 h-2 rounded-full bg-red-500 shrink-0" />;
+}
+
+function sourceLabel(id: SourceId, state: SourceState): string {
+  if (state.status === 'checking') return 'Checking…';
+  if (state.status === 'error')    return 'Unavailable';
+  if (state.status === 'empty')    return 'No data';
+  // ok
+  if (id === 'live')    return 'Fetched';
+  if (id === 'yandex')  return 'Cached';
+  return `${state.count} snapshot${state.count !== 1 ? 's' : ''}`;
+}
+
+function SourceStatusPanel({ statuses }: { statuses: SourceStatuses }) {
+  return (
+    <div className="max-w-2xl mx-auto">
+      <div className="rounded-xl border border-slate-800 bg-slate-900/40 px-5 py-4">
+        <p className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-3">
+          Archive sources
+        </p>
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-2.5">
+          {ALL_SOURCES.map((id) => {
+            const state = statuses[id];
+            return (
+              <div key={id} className="flex items-center gap-2 min-w-0">
+                <StatusDot status={state.status} />
+                <span className="text-sm text-slate-300 truncate">{SOURCE_LABELS[id]}</span>
+                <span className={`text-xs ml-auto shrink-0 tabular-nums ${
+                  state.status === 'checking' ? 'text-slate-600' :
+                  state.status === 'ok'       ? 'text-teal-400'  :
+                  state.status === 'error'    ? 'text-red-500'   :
+                  'text-slate-600'
+                }`}>
+                  {sourceLabel(id, state)}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 const EXAMPLE_URL =
@@ -51,6 +125,7 @@ export default function Home() {
   const [progress, setProgress] = useState<Progress>({ done: 0, total: 0 });
   const [result, setResult] = useState<Result | null>(null);
   const [errorMsg, setErrorMsg] = useState('');
+  const [sourceStatuses, setSourceStatuses] = useState<SourceStatuses>(initSourceStatuses);
   const inputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -67,6 +142,7 @@ export default function Home() {
     setProgress({ done: 0, total: 0 });
     setResult(null);
     setErrorMsg('');
+    setSourceStatuses(initSourceStatuses());
 
     try {
       const res = await fetch(`/api/prices?url=${encodeURIComponent(url.trim())}`, {
@@ -92,7 +168,12 @@ export default function Home() {
           if (!line) continue;
           try {
             const event = JSON.parse(line) as SSEEvent;
-            if (event.type === 'snapshots') {
+            if (event.type === 'source') {
+              setSourceStatuses((prev) => ({
+                ...prev,
+                [event.source]: { status: event.status, count: event.count },
+              }));
+            } else if (event.type === 'snapshots') {
               setProgress({ done: 0, total: event.total });
             } else if (event.type === 'progress') {
               setProgress({ done: event.done, total: event.total });
@@ -177,6 +258,11 @@ export default function Home() {
             </div>
           )}
         </form>
+
+        {/* Source status panel — visible while loading and after done */}
+        {(status === 'loading' || status === 'done') && (
+          <SourceStatusPanel statuses={sourceStatuses} />
+        )}
 
         {/* Loading + progress */}
         {status === 'loading' && (
