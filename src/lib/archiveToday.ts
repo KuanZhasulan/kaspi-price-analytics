@@ -22,7 +22,8 @@ export async function getArchiveTodaySnapshots(productUrl: string): Promise<Snap
 
   // Parse lines like:
   // <https://archive.ph/20211001120000/https://kaspi.kz/...>; rel="memento"; datetime="..."
-  const re = /<(https:\/\/archive\.ph\/(\d{14})\/[^>]+)>;\s*rel="memento"/g;
+  // Archive.today operates under multiple domains (archive.ph, archive.today, archive.is, archive.fo, etc.)
+  const re = /<(https:\/\/archive\.(?:ph|today|is|fo|li)\/(\d{14})\/[^>]+)>;\s*rel="memento"/g;
   const byMonth = new Map<string, { ts: string; url: string }>();
 
   let m: RegExpExecArray | null;

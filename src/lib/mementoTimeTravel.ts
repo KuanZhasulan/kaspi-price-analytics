@@ -8,7 +8,9 @@ import type { Snapshot } from './wayback';
  * Returns one snapshot per calendar month, deduplicated across all member archives.
  */
 export async function getMementoSnapshots(productUrl: string): Promise<Snapshot[]> {
-  const timemapUrl = `http://timetravel.mementoweb.org/timemap/link/${productUrl}`;
+  // NOTE: timetravel.mementoweb.org DNS is currently unresolvable (service appears down as of 2025).
+  // Kept here to resume automatically if the service comes back online.
+  const timemapUrl = `https://timetravel.mementoweb.org/timemap/link/${productUrl}`;
 
   let body: string;
   try {

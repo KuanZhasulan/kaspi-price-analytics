@@ -24,7 +24,16 @@ export async function fetchYandexCache(url: string): Promise<string | null> {
       },
       responseType: 'text',
     });
-    return typeof data === 'string' && data.length > 500 ? data : null;
+    if (typeof data !== 'string' || data.length <= 500) return null;
+    // Yandex SmartCaptcha returns HTTP 200 with a ~14KB "Вы не робот?" page.
+    // Detect it by known captcha markers before passing to the parser.
+    if (
+      data.includes('SmartCaptcha') ||
+      data.includes('smartcaptcha') ||
+      data.includes('не робот') ||
+      data.includes('yandex-captcha')
+    ) return null;
+    return data;
   } catch {
     return null;
   }
