@@ -1,42 +1,36 @@
-@import "tw-animate-css";
-@import "shadcn/tailwind.css";
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
   :root {
-    --background: oklch(0.10 0 0);
-    --foreground: oklch(0.97 0 0);
-    --card: oklch(0.14 0 0);
-    --card-foreground: oklch(0.97 0 0);
-    --popover: oklch(0.14 0 0);
-    --popover-foreground: oklch(0.97 0 0);
-    --primary: oklch(0.70 0.15 185);
-    --primary-foreground: oklch(0.10 0 0);
-    --secondary: oklch(0.20 0 0);
-    --secondary-foreground: oklch(0.97 0 0);
-    --muted: oklch(0.18 0 0);
-    --muted-foreground: oklch(0.55 0 0);
-    --accent: oklch(0.20 0 0);
-    --accent-foreground: oklch(0.97 0 0);
-    --destructive: oklch(0.60 0.22 25);
-    --destructive-foreground: oklch(0.97 0 0);
-    --border: oklch(1 0 0 / 8%);
-    --input: oklch(1 0 0 / 10%);
-    --ring: oklch(0.70 0.15 185);
+    --background: 222 47% 5%;
+    --foreground: 210 40% 98%;
+    --card: 222 47% 9%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222 47% 9%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 175 75% 55%;
+    --primary-foreground: 222 47% 5%;
+    --secondary: 217 33% 14%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217 33% 14%;
+    --muted-foreground: 215 20% 50%;
+    --accent: 217 33% 17%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 72% 60%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217 33% 16%;
+    --input: 217 33% 16%;
+    --ring: 175 75% 55%;
     --radius: 0.75rem;
-    --chart-teal: oklch(0.70 0.15 185);
-    --chart-green: oklch(0.70 0.17 150);
-    --chart-red: oklch(0.65 0.22 25);
   }
+
   * {
-    @apply border-border outline-ring/50;
+    @apply border-border;
   }
+
   body {
     @apply bg-background text-foreground;
-  }
-  html {
-    @apply font-sans;
   }
 }
