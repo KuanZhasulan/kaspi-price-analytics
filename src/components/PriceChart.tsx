@@ -15,10 +15,12 @@ import { TrendingDown, TrendingUp, Minus } from 'lucide-react';
 import type { PricePoint } from '@/app/api/prices/route';
 
 const SOURCE_LABELS: Record<PricePoint['source'], { label: string; className: string }> = {
-  live:           { label: 'Live',          className: 'bg-teal-950 text-teal-300 border-teal-800' },
-  wayback:        { label: 'Wayback',       className: 'bg-blue-950 text-blue-300 border-blue-800' },
-  'archive.today':{ label: 'Archive.today', className: 'bg-purple-950 text-purple-300 border-purple-800' },
-  yandex:         { label: 'Yandex',        className: 'bg-orange-950 text-orange-300 border-orange-800' },
+  live:            { label: 'Live',          className: 'bg-teal-950 text-teal-300 border-teal-800' },
+  wayback:         { label: 'Wayback',       className: 'bg-blue-950 text-blue-300 border-blue-800' },
+  'archive.today': { label: 'Archive.today', className: 'bg-purple-950 text-purple-300 border-purple-800' },
+  yandex:          { label: 'Yandex',        className: 'bg-orange-950 text-orange-300 border-orange-800' },
+  memento:         { label: 'Memento',       className: 'bg-pink-950 text-pink-300 border-pink-800' },
+  'common-crawl':  { label: 'Common Crawl', className: 'bg-green-950 text-green-300 border-green-800' },
 };
 
 function SourceBadge({ source }: { source: PricePoint['source'] }) {

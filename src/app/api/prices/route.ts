@@ -2,16 +2,20 @@ import { NextRequest } from 'next/server';
 import axios from 'axios';
 import { getSnapshots, type Snapshot } from '@/lib/wayback';
 import { getArchiveTodaySnapshots } from '@/lib/archiveToday';
+import { getMementoSnapshots } from '@/lib/mementoTimeTravel';
+import { getCommonCrawlSnapshots, fetchCCPage, type CCSnapshot } from '@/lib/commonCrawl';
 import { fetchYandexCache } from '@/lib/yandexCache';
 import { extractPriceData, extractProductName } from '@/lib/parser';
 import { log } from '@/lib/log';
+
+export type SourceId = 'live' | 'wayback' | 'archive.today' | 'memento' | 'common-crawl' | 'yandex';
 
 export interface PricePoint {
   date: string;
   price: number;
   shop?: string;
   timestamp: string;
-  source: 'live' | 'wayback' | 'archive.today' | 'yandex';
+  source: SourceId;
 }
 
 export type SSEEvent =
@@ -20,7 +24,9 @@ export type SSEEvent =
   | { type: 'done'; points: PricePoint[]; total: number; parsed: number }
   | { type: 'error'; message: string };
 
-const HEADERS = {
+// ─── HTTP helpers ─────────────────────────────────────────────────────────────
+
+const BROWSER_HEADERS = {
   'User-Agent':
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
   Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -30,7 +36,7 @@ const HEADERS = {
 async function fetchHtml(url: string): Promise<string | null> {
   try {
     const { data } = await axios.get<string>(url, {
-      headers: HEADERS,
+      headers: BROWSER_HEADERS,
       timeout: 20_000,
       maxRedirects: 5,
       responseType: 'text',
@@ -54,11 +60,13 @@ function normalizeKaspiUrl(raw: string): string {
   }
 }
 
+// ─── Concurrency helper ───────────────────────────────────────────────────────
+
 async function mapConcurrent<T, R>(
   items: T[],
   concurrency: number,
   fn: (item: T, index: number) => Promise<R>,
-  onDone?: (index: number, result: R) => void
+  onDone?: () => void
 ): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let idx = 0;
@@ -66,34 +74,61 @@ async function mapConcurrent<T, R>(
     while (idx < items.length) {
       const i = idx++;
       results[i] = await fn(items[i], i);
-      onDone?.(i, results[i]);
+      onDone?.();
     }
   }
   await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
   return results;
 }
 
-/** Merge snapshot lists, dedup by YYYYMM, keep earliest per month */
-function mergeByMonth(
-  groups: Array<{ snaps: Snapshot[]; source: PricePoint['source'] }>
-): Array<Snapshot & { source: PricePoint['source'] }> {
-  const byMonth = new Map<string, Snapshot & { source: PricePoint['source'] }>();
+// ─── Snapshot unification ─────────────────────────────────────────────────────
+
+interface TaggedSnap {
+  timestamp: string;
+  date: Date;
+  source: SourceId;
+  // For standard archives
+  archivedUrl?: string;
+  // For Common Crawl
+  ccData?: CCSnapshot;
+}
+
+function mergeAllByMonth(
+  groups: Array<{ snaps: Array<Snapshot | CCSnapshot>; source: SourceId }>
+): TaggedSnap[] {
+  const byMonth = new Map<string, TaggedSnap>();
+
   for (const { snaps, source } of groups) {
     for (const s of snaps) {
       const month = s.timestamp.slice(0, 6);
-      const existing = byMonth.get(month);
-      if (!existing || s.timestamp < existing.timestamp) {
-        byMonth.set(month, { ...s, source });
-      }
+      if (byMonth.has(month)) continue; // keep first source found per month
+
+      const isCC = 'filename' in s;
+      byMonth.set(month, {
+        timestamp: s.timestamp,
+        date: s.date,
+        source,
+        archivedUrl: isCC ? undefined : (s as Snapshot).archivedUrl,
+        ccData: isCC ? (s as CCSnapshot) : undefined,
+      });
     }
   }
+
   return Array.from(byMonth.values()).sort((a, b) => a.timestamp.localeCompare(b.timestamp));
 }
 
+async function fetchSnapshotHtml(snap: TaggedSnap): Promise<string | null> {
+  if (snap.ccData) return fetchCCPage(snap.ccData);
+  if (snap.archivedUrl) return fetchHtml(snap.archivedUrl);
+  return null;
+}
+
+// ─── Route handler ────────────────────────────────────────────────────────────
+
 export async function GET(req: NextRequest) {
   const raw = req.nextUrl.searchParams.get('url');
-
   const enc = new TextEncoder();
+
   function sse(event: SSEEvent): Uint8Array {
     return enc.encode(`data: ${JSON.stringify(event)}\n\n`);
   }
@@ -118,19 +153,30 @@ export async function GET(req: NextRequest) {
       log.header('Kaspi Price Analytics — new request');
       log.info(`URL: ${productUrl}`);
 
-      // ── Step 1: Live page + all archive sources in parallel ───────────────
-      const [liveHtml, waybackSnaps, archiveTodaySnaps, yandexHtml] = await Promise.all([
+      // ── Step 1: All sources in parallel ──────────────────────────────────
+      const [
+        liveHtml,
+        waybackSnaps,
+        archiveTodaySnaps,
+        mementoSnaps,
+        ccSnaps,
+        yandexHtml,
+      ] = await Promise.all([
         fetchHtml(productUrl),
         getSnapshots(productUrl).catch(() => [] as Snapshot[]),
         getArchiveTodaySnapshots(productUrl).catch(() => [] as Snapshot[]),
+        getMementoSnapshots(productUrl).catch(() => [] as Snapshot[]),
+        getCommonCrawlSnapshots(productUrl).catch(() => [] as CCSnapshot[]),
         fetchYandexCache(productUrl).catch(() => null),
       ]);
 
       log.info(
-        `Sources: live=${!!liveHtml} wayback=${waybackSnaps.length} archive.today=${archiveTodaySnaps.length} yandex=${!!yandexHtml}`
+        `Sources ready — live:${!!liveHtml} wayback:${waybackSnaps.length} ` +
+        `archive.today:${archiveTodaySnaps.length} memento:${mementoSnaps.length} ` +
+        `cc:${ccSnaps.length} yandex:${!!yandexHtml}`
       );
 
-      // ── Step 2: Extract live price ────────────────────────────────────────
+      // ── Step 2: Live price ────────────────────────────────────────────────
       const today = new Date().toISOString().split('T')[0];
       let livePoint: PricePoint | null = null;
 
@@ -138,28 +184,27 @@ export async function GET(req: NextRequest) {
         productName = extractProductName(liveHtml);
         const parsed = extractPriceData(liveHtml);
         if (parsed) {
-          log.price(today, parsed.price, parsed.shop, parsed.strategy + ' [live]');
+          log.price(today, parsed.price, parsed.shop, `${parsed.strategy} [live]`);
           livePoint = { date: today, price: parsed.price, shop: parsed.shop, timestamp: 'live', source: 'live' };
         }
       }
 
-      // ── Step 3: Extract Yandex cache price (treated as near-current) ──────
+      // ── Step 3: Yandex cache price ────────────────────────────────────────
       let yandexPoint: PricePoint | null = null;
-      if (yandexHtml) {
+      if (yandexHtml && !livePoint) {
         const parsed = extractPriceData(yandexHtml);
         if (parsed) {
-          // Use today's date since Yandex cache is recent (no timestamp available)
-          if (!livePoint) {
-            log.price(today, parsed.price, parsed.shop, parsed.strategy + ' [yandex]');
-            yandexPoint = { date: today, price: parsed.price, shop: parsed.shop, timestamp: 'yandex', source: 'yandex' };
-          }
+          log.price(today, parsed.price, parsed.shop, `${parsed.strategy} [yandex]`);
+          yandexPoint = { date: today, price: parsed.price, shop: parsed.shop, timestamp: 'yandex', source: 'yandex' };
         }
       }
 
-      // ── Step 4: Merge archive snapshots from Wayback + Archive.today ──────
-      const allSnaps = mergeByMonth([
-        { snaps: waybackSnaps, source: 'wayback' },
+      // ── Step 4: Merge all archive sources, one snapshot per month ─────────
+      const allSnaps = mergeAllByMonth([
+        { snaps: waybackSnaps,      source: 'wayback'       },
         { snaps: archiveTodaySnaps, source: 'archive.today' },
+        { snaps: mementoSnaps,      source: 'memento'       },
+        { snaps: ccSnaps,           source: 'common-crawl'  },
       ]);
 
       if (allSnaps.length === 0 && !livePoint && !yandexPoint) {
@@ -180,14 +225,14 @@ export async function GET(req: NextRequest) {
       log.found(allSnaps.length, productUrl);
       ctrl.enqueue(sse({ type: 'snapshots', total: allSnaps.length }));
 
-      // ── Step 5: Fetch + parse each archive snapshot ───────────────────────
+      // ── Step 5: Fetch + parse each snapshot (4 concurrent) ───────────────
       let done = 0;
       const rawResults = await mapConcurrent(
         allSnaps,
         4,
         async (snap) => {
           const date = snap.date.toISOString().split('T')[0];
-          const html = await fetchHtml(snap.archivedUrl);
+          const html = await fetchSnapshotHtml(snap);
           if (!html) { log.miss(date); return null; }
           if (!productName) productName = extractProductName(html);
           const parsed = extractPriceData(html);
@@ -201,19 +246,15 @@ export async function GET(req: NextRequest) {
         }
       );
 
-      // ── Step 6: Merge everything, dedup by date ───────────────────────────
+      // ── Step 6: Merge everything ──────────────────────────────────────────
       const archivePoints = rawResults.filter((r): r is PricePoint => r !== null);
       const allPoints: PricePoint[] = [...archivePoints];
-
       for (const pt of [yandexPoint, livePoint]) {
-        if (pt && !allPoints.some((p) => p.date === pt.date)) {
-          allPoints.push(pt);
-        }
+        if (pt && !allPoints.some((p) => p.date === pt.date)) allPoints.push(pt);
       }
 
       const points = allPoints.sort((a, b) => a.date.localeCompare(b.date));
       log.summary(productName, points.length, allSnaps.length, Date.now() - startMs);
-
       ctrl.enqueue(sse({ type: 'done', points, total: allSnaps.length, parsed: points.length }));
       ctrl.close();
     },
