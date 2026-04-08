@@ -14,15 +14,16 @@ There is no official price history feature on Kaspi. This tool fills that gap by
 
 ## How it works
 
-When you paste a product URL, the app queries three independent web archives in parallel:
+When you paste a product URL, the app queries four sources in parallel:
 
 | Source | What it provides |
 |--------|-----------------|
-| **Wayback Machine** | The most comprehensive source — queries 4 URL patterns via the CDX API to maximise hit rate |
+| **Kaspi (live)** | The current price, fetched directly from kaspi.kz |
+| **Wayback Machine** | The most comprehensive archive — queries 4 URL patterns via the CDX API to maximise hit rate |
 | **Archive.today** | An independent archive that occasionally captures Kaspi pages |
 | **Common Crawl** | A public crawl dataset; retrieves raw WARC records and decompresses them on the fly |
 
-It also fetches the **current live price** from Kaspi directly.
+No API keys or external credentials are required — all sources are publicly accessible.
 
 All snapshots are deduplicated to one per calendar month (earliest capture wins), parsed for price data using a 5-strategy cascade, and streamed back to the browser in real time via Server-Sent Events.
 
@@ -33,7 +34,7 @@ npm install
 npm run dev       # starts at http://localhost:3000
 ```
 
-Paste any `kaspi.kz/shop/p/...` product URL and click **Analyze**. Results stream in as each archive source responds — typically within 30–90 seconds.
+Paste any kaspi.kz product URL and click **Analyze**. Results stream in as each archive source responds — typically within 30–90 seconds.
 
 ## Tech stack
 
