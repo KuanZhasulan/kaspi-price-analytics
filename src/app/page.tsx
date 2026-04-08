@@ -18,15 +18,13 @@ interface Progress {
 
 // ─── Source status panel ──────────────────────────────────────────────────────
 
-const ALL_SOURCES: SourceId[] = ['live', 'wayback', 'archive.today', 'common-crawl', 'memento', 'yandex'];
+const ALL_SOURCES: SourceId[] = ['live', 'wayback', 'archive.today', 'common-crawl'];
 
 const SOURCE_LABELS: Record<SourceId, string> = {
   live:            'Live',
   wayback:         'Wayback Machine',
   'archive.today': 'Archive.today',
-  memento:         'Memento',
   'common-crawl':  'Common Crawl',
-  yandex:          'Yandex Cache',
 };
 
 type SourceState = { status: 'checking' | SourceStatus; count: number };
@@ -54,8 +52,7 @@ function sourceLabel(id: SourceId, state: SourceState): string {
   if (state.status === 'error')    return 'Unavailable';
   if (state.status === 'empty')    return 'No data';
   // ok
-  if (id === 'live')    return 'Fetched';
-  if (id === 'yandex')  return 'Cached';
+  if (id === 'live') return 'Fetched';
   return `${state.count} snapshot${state.count !== 1 ? 's' : ''}`;
 }
 

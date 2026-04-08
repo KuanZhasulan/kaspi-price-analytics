@@ -2,13 +2,11 @@ import { NextRequest } from 'next/server';
 import axios from 'axios';
 import { getSnapshots, type Snapshot } from '@/lib/wayback';
 import { getArchiveTodaySnapshots } from '@/lib/archiveToday';
-import { getMementoSnapshots } from '@/lib/mementoTimeTravel';
 import { getCommonCrawlSnapshots, fetchCCPage, type CCSnapshot } from '@/lib/commonCrawl';
-import { fetchYandexCache } from '@/lib/yandexCache';
 import { extractPriceData, extractProductName } from '@/lib/parser';
 import { log } from '@/lib/log';
 
-export type SourceId = 'live' | 'wayback' | 'archive.today' | 'memento' | 'common-crawl' | 'yandex';
+export type SourceId = 'live' | 'wayback' | 'archive.today' | 'common-crawl';
 
 export interface PricePoint {
   date: string;
@@ -161,31 +159,24 @@ export async function GET(req: NextRequest) {
         liveHtml,
         waybackSnaps,
         archiveTodaySnaps,
-        mementoSnaps,
         ccSnaps,
-        yandexHtml,
       ] = await Promise.all([
         fetchHtml(productUrl),
         getSnapshots(productUrl).catch(() => [] as Snapshot[]),
         getArchiveTodaySnapshots(productUrl).catch(() => [] as Snapshot[]),
-        getMementoSnapshots(productUrl).catch(() => [] as Snapshot[]),
         getCommonCrawlSnapshots(productUrl).catch(() => [] as CCSnapshot[]),
-        fetchYandexCache(productUrl).catch(() => null),
       ]);
 
       log.info(
         `Sources ready — live:${!!liveHtml} wayback:${waybackSnaps.length} ` +
-        `archive.today:${archiveTodaySnaps.length} memento:${mementoSnaps.length} ` +
-        `cc:${ccSnaps.length} yandex:${!!yandexHtml}`
+        `archive.today:${archiveTodaySnaps.length} cc:${ccSnaps.length}`
       );
 
       // Emit per-source status so the UI can show a source status panel
-      ctrl.enqueue(sse({ type: 'source', source: 'live',          status: liveHtml              ? 'ok' : 'error', count: liveHtml              ? 1                      : 0 }));
-      ctrl.enqueue(sse({ type: 'source', source: 'wayback',       status: waybackSnaps.length   ? 'ok' : 'empty', count: waybackSnaps.length                               }));
-      ctrl.enqueue(sse({ type: 'source', source: 'archive.today', status: archiveTodaySnaps.length ? 'ok' : 'empty', count: archiveTodaySnaps.length                       }));
-      ctrl.enqueue(sse({ type: 'source', source: 'memento',       status: mementoSnaps.length   ? 'ok' : 'empty', count: mementoSnaps.length                               }));
-      ctrl.enqueue(sse({ type: 'source', source: 'common-crawl',  status: ccSnaps.length        ? 'ok' : 'empty', count: ccSnaps.length                                    }));
-      ctrl.enqueue(sse({ type: 'source', source: 'yandex',        status: yandexHtml            ? 'ok' : 'empty', count: yandexHtml            ? 1                      : 0 }));
+      ctrl.enqueue(sse({ type: 'source', source: 'live',          status: liveHtml                 ? 'ok' : 'error', count: liveHtml                 ? 1 : 0 }));
+      ctrl.enqueue(sse({ type: 'source', source: 'wayback',       status: waybackSnaps.length      ? 'ok' : 'empty', count: waybackSnaps.length             }));
+      ctrl.enqueue(sse({ type: 'source', source: 'archive.today', status: archiveTodaySnaps.length ? 'ok' : 'empty', count: archiveTodaySnaps.length        }));
+      ctrl.enqueue(sse({ type: 'source', source: 'common-crawl',  status: ccSnaps.length           ? 'ok' : 'empty', count: ccSnaps.length                  }));
 
       // ── Step 2: Live price ────────────────────────────────────────────────
       const today = new Date().toISOString().split('T')[0];
@@ -200,25 +191,14 @@ export async function GET(req: NextRequest) {
         }
       }
 
-      // ── Step 3: Yandex cache price ────────────────────────────────────────
-      let yandexPoint: PricePoint | null = null;
-      if (yandexHtml && !livePoint) {
-        const parsed = extractPriceData(yandexHtml);
-        if (parsed) {
-          log.price(today, parsed.price, parsed.shop, `${parsed.strategy} [yandex]`);
-          yandexPoint = { date: today, price: parsed.price, shop: parsed.shop, timestamp: 'yandex', source: 'yandex' };
-        }
-      }
-
-      // ── Step 4: Merge all archive sources, one snapshot per month ─────────
+      // ── Step 3: Merge all archive sources, one snapshot per month ─────────
       const allSnaps = mergeAllByMonth([
         { snaps: waybackSnaps,      source: 'wayback'       },
         { snaps: archiveTodaySnaps, source: 'archive.today' },
-        { snaps: mementoSnaps,      source: 'memento'       },
         { snaps: ccSnaps,           source: 'common-crawl'  },
       ]);
 
-      if (allSnaps.length === 0 && !livePoint && !yandexPoint) {
+      if (allSnaps.length === 0 && !livePoint) {
         log.info('No data found from any source.');
         ctrl.enqueue(sse({ type: 'done', points: [], total: 0, parsed: 0 }));
         ctrl.close();
@@ -226,7 +206,7 @@ export async function GET(req: NextRequest) {
       }
 
       if (allSnaps.length === 0) {
-        const pts = [livePoint, yandexPoint].filter(Boolean) as PricePoint[];
+        const pts = [livePoint].filter(Boolean) as PricePoint[];
         log.summary(productName, pts.length, 0, Date.now() - startMs);
         ctrl.enqueue(sse({ type: 'done', points: pts, total: 0, parsed: pts.length }));
         ctrl.close();
@@ -260,9 +240,7 @@ export async function GET(req: NextRequest) {
       // ── Step 6: Merge everything ──────────────────────────────────────────
       const archivePoints = rawResults.filter((r): r is PricePoint => r !== null);
       const allPoints: PricePoint[] = [...archivePoints];
-      for (const pt of [yandexPoint, livePoint]) {
-        if (pt && !allPoints.some((p) => p.date === pt.date)) allPoints.push(pt);
-      }
+      if (livePoint && !allPoints.some((p) => p.date === livePoint.date)) allPoints.push(livePoint);
 
       const points = allPoints.sort((a, b) => a.date.localeCompare(b.date));
       log.summary(productName, points.length, allSnaps.length, Date.now() - startMs);
