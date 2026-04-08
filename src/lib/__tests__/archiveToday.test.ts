@@ -59,6 +59,10 @@ describe('getArchiveTodaySnapshots', () => {
 
     const result = await getArchiveTodaySnapshots(PRODUCT_URL);
     expect(result).toHaveLength(domains.length);
+    // Each result's archivedUrl should start with the corresponding domain
+    domains.forEach((domain, i) => {
+      expect(result[i].archivedUrl).toMatch(new RegExp(`^https://${domain.replace('.', '\\.')}/`));
+    });
   });
 
   it('deduplicates to one snapshot per month (keeps earliest timestamp)', async () => {
@@ -72,6 +76,7 @@ describe('getArchiveTodaySnapshots', () => {
     const result = await getArchiveTodaySnapshots(PRODUCT_URL);
     expect(result).toHaveLength(2);
     expect(result[0].timestamp).toBe('20230401000000'); // earliest April kept
+    expect(result[0].date).toEqual(new Date(2023, 3, 1));
     expect(result[1].timestamp).toBe('20230501000000');
   });
 
@@ -104,11 +109,13 @@ describe('getArchiveTodaySnapshots', () => {
     expect(result[0].timestamp).toBe('20230601000000');
   });
 
-  it('queries the correct timemap URL', async () => {
+  it('queries the correct timemap URL with responseType text', async () => {
     mockedGet.mockResolvedValue({ data: '' });
     await getArchiveTodaySnapshots(PRODUCT_URL);
 
-    const [calledUrl] = mockedGet.mock.calls[0] as [string];
+    const [calledUrl, config] = mockedGet.mock.calls[0] as [string, { responseType: string }];
     expect(calledUrl).toBe(`https://archive.ph/timemap/link/${PRODUCT_URL}`);
+    // responseType must be 'text' — otherwise axios attempts JSON parsing and breaks the regex
+    expect(config.responseType).toBe('text');
   });
 });
