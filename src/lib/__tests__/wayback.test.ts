@@ -42,8 +42,9 @@ describe('getSnapshots', () => {
 
     expect(result).toHaveLength(1);
     expect(result[0].timestamp).toBe('20231005120000');
-    expect(result[0].archivedUrl).toContain('web.archive.org/web/20231005120000id_/');
-    expect(result[0].archivedUrl).toContain('kaspi.kz');
+    expect(result[0].archivedUrl).toBe(
+      `https://web.archive.org/web/20231005120000id_/${PRODUCT_URL}`
+    );
     expect(result[0].date).toEqual(new Date(2023, 9, 5)); // month is 0-indexed
   });
 
